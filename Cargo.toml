@@ -1,39 +1,84 @@
 [package]
-name = "trin"
+name = "discv5-overlay"
 version = "0.1.0"
 authors = ["Jacob Kaufmann <jacobkaufmann18@gmail.com>", "Jason Carver <ut96caarrs@snkmail.com>"]
 edition = "2021"
 rust-version = "1.62.0"
-default-run = "trin"
-repository = "https://github.com/ethereum/trin"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+repository = "https://github.com/timoth-y/trin"
 
 [dependencies]
-discv5 = { git = "https://github.com/sigp/discv5.git", branch = "master" }
-#enr = { version = "=0.6.0", features = ["k256", "ed25519"] }
+anyhow = "1.0.57"
+async-recursion = "1.0.0"
+async-trait = "0.1.53"
+base64 = "0.13.0"
+bytes = "1.1.0"
+clap = "2.33.3"
+ctrlc = "3.1.8"
+delay_map = "0.1.1"
+directories = "3.0"
+discv5 = "0.1.0"
+eth_trie = "0.1.0"
+eth2_ssz = "0.4.0"
+eth2_ssz_derive = "0.3.0"
+eth2_ssz_types = "0.2.1"
 ethereum-types = "0.12.1"
+fnv = "1.0.7"
+futures = "0.3.13"
 hex = "0.4.3"
+httparse = "1.5.1"
+keccak-hash = "0.8.0"
+lazy_static = "1.4.0"
+leb128 = "0.2.1"
+lru = "0.7.8"
+num = "0.4.0"
 parking_lot = "0.11.2"
 prometheus_exporter = "0.8.4"
 rand = "0.8.4"
 rlp = "0.5.0"
-serde_json = {version = "1.0.59", features = ["preserve_order"]}
-sha3 = "0.9.1"
+rlp-derive = "0.1.0"
+rocksdb = "0.18.0"
+r2d2 = "0.8.9"
+r2d2_sqlite = "0.19.0"
+serde = { version = "1.0.125", features = ["derive"] }
+serde_json = "1.0.59"
+sha2 = "0.10.1"
+stunclient = "0.1.2"
 structopt = "0.3"
+sha3 = "0.9.1"
+smallvec = "1.8.0"
+tempfile = "3.3.0"
+thiserror = "1.0.29"
+threadpool = "1.8.1"
 tokio = { version = "1.8.0", features = ["full"] }
+tokio-util = "0.6.8"
 tracing = "0.1.36"
-tracing-subscriber = "0.3.15"
-trin-core = { path = "trin-core" }
-trin-history = { path = "trin-history" }
-trin-state = { path = "trin-state" }
+tree_hash = "0.4.0"
+tree_hash_derive = "0.4.0"
+uint = { version = "0.8.5", default-features = false }
 ureq = { version = "2.2.0", features = ["json"] }
+validator = { version = "0.13.0", features = ["derive"] }
 
+[target.'cfg(windows)'.dependencies]
+ipconfig = "0.2.2"
+uds_windows = "1.0.1"
 
-[workspace]
-members = [
-    "trin-history",
-    "trin-state",
-    "trin-core",
-    "trin-cli",
-]
+[target.'cfg(unix)'.dependencies]
+interfaces = "0.0.7"
+
+[dependencies.rusqlite]
+version = "0.26.3"
+features = ["bundled"]
+
+[dev-dependencies]
+env_logger = "0.9.0"
+ntest = "0.8.0"
+quickcheck = "1.0.3"
+test-log = { version = "0.2.11", features = ["trace"] }
+rstest = "0.11.0"
+serial_test = "0.5.1"
+tokio-test = "0.4.2"
+tracing-subscriber = "0.3.15"
+
+[patch.crates-io]
+discv5 = {git = "https://github.com/timoth-y/discv5"}
+# discv5 = {path = "../../discv5"}
