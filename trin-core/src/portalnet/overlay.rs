@@ -88,7 +88,6 @@ impl Default for OverlayConfig {
 /// (state, history etc.) and dispatch them to the discv5 protocol TalkReq. Each network should
 /// implement the overlay protocol and the overlay protocol is where we can encapsulate the logic for
 /// handling common network requests/responses.
-#[derive(Clone)]
 pub struct OverlayProtocol<TContentKey, TMetric, TValidator, TStore> {
     /// Reference to the underlying discv5 protocol
     pub discovery: Arc<Discovery>,
@@ -117,14 +116,14 @@ pub struct OverlayProtocol<TContentKey, TMetric, TValidator, TStore> {
 
 impl<
         TContentKey: 'static + OverlayContentKey + Send + Sync,
-        TMetric: Metric + Send + Sync,
+        TMetric: 'static + Metric + Send + Sync,
         TValidator: 'static + Validator<TContentKey> + Send + Sync,
         TStore: 'static + ContentStore + Send + Sync,
     > OverlayProtocol<TContentKey, TMetric, TValidator, TStore>
 where
     <TContentKey as TryFrom<Vec<u8>>>::Error: Debug + Display + Send,
 {
-    pub async fn new(
+    pub fn new(
         config: OverlayConfig,
         discovery: Arc<Discovery>,
         utp_listener_tx: UnboundedSender<UtpListenerRequest>,
@@ -132,7 +131,7 @@ where
         data_radius: Distance,
         protocol: ProtocolId,
         validator: Arc<TValidator>,
-    ) -> Self {
+    ) -> (Self, OverlayService<TContentKey, TMetric, TValidator, TStore>) {
         let kbuckets = Arc::new(RwLock::new(KBucketsTable::new(
             discovery.local_enr().node_id().into(),
             config.bucket_pending_timeout,
@@ -142,7 +141,7 @@ where
         )));
 
         let data_radius = Arc::new(data_radius);
-        let command_tx = OverlayService::<TContentKey, TMetric, TValidator, TStore>::spawn(
+        let (service, command_tx) = OverlayService::<TContentKey, TMetric, TValidator, TStore>::new(
             Arc::clone(&discovery),
             Arc::clone(&store),
             Arc::clone(&kbuckets),
@@ -158,11 +157,9 @@ where
             config.query_parallelism,
             config.query_num_results,
             config.findnodes_query_distances_per_peer,
-        )
-        .await
-        .unwrap();
+        );
 
-        Self {
+        (Self {
             discovery,
             data_radius,
             kbuckets,
@@ -173,7 +170,7 @@ where
             phantom_content_key: PhantomData,
             phantom_metric: PhantomData,
             validator,
-        }
+        }, service)
     }
 
     /// Returns the subnetwork protocol of the overlay protocol.
@@ -201,7 +198,10 @@ where
                 Ok(request) => request,
                 Err(err) => return Err(OverlayRequestError::InvalidRequest(err.to_string())),
             },
-            Err(_) => return Err(OverlayRequestError::DecodeError),
+            Err(_) => {
+                println!("in overlay: {:?}", talk_request.body().to_vec());
+                return Err(OverlayRequestError::DecodeError);
+            },
         };
         let direction = RequestDirection::Incoming {
             id: talk_request.id().clone(),
@@ -458,9 +458,7 @@ where
     /// Returns a map (BTree for its ordering guarantees) with:
     ///     key: usize representing bucket index
     ///     value: Vec of tuples, each tuple represents a node
-    pub fn bucket_entries(
-        &self,
-    ) -> BTreeMap<usize, Vec<(NodeId, Enr, NodeStatus, Distance, Option<String>)>> {
+    pub fn bucket_entries(&self) -> BTreeMap<usize, Vec<(NodeId, Enr, NodeStatus, Distance)>> {
         self.kbuckets
             .read()
             .buckets_iter()
@@ -472,25 +470,11 @@ where
                     bucket
                         .iter()
                         .map(|node| {
-                            // "c" is used as short-hand for "client" within the ENR's key-values.
-                            let client_info: Option<String> = match node.value.enr().clone().get("c") {
-                                Some(slice) => {
-                                    match std::str::from_utf8(slice) {
-                                        Ok(client_string) => Some(client_string.to_string()),
-                                        Err(err) => {
-                                            error!("Failed to parse remote client info from ENR: {err:?}");
-                                            None
-                                        }
-                                    }
-                                }
-                                None => None
-                            };
                             (
                                 *node.key.preimage(),
                                 node.value.enr().clone(),
                                 node.status,
                                 node.value.data_radius(),
-                                client_info,
                             )
                         })
                         .collect(),
@@ -667,6 +651,7 @@ where
         };
 
         // Send the request and wait on the response.
+        println!("sening offer");
         match self
             .send_overlay_request(Request::Offer(request), direction)
             .await

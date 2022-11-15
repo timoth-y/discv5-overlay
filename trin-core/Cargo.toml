@@ -14,8 +14,7 @@ clap = "2.33.3"
 ctrlc = "3.1.8"
 delay_map = "0.1.1"
 directories = "3.0"
-discv5 = { git = "https://github.com/sigp/discv5.git", branch = "master" }
-enr = { version = "=0.6.0", features = ["k256", "ed25519"] }
+discv5 = { path = "../../discv5" }
 eth_trie = "0.1.0"
 eth2_ssz = "0.4.0"
 eth2_ssz_derive = "0.3.0"
@@ -77,3 +76,7 @@ rstest = "0.11.0"
 serial_test = "0.5.1"
 tokio-test = "0.4.2"
 tracing-subscriber = "0.3.15"
+
+[patch.crates-io]
+# discv5 = {git = "https://github.com/timoth-y/discv5"}
+discv5 = {path = "../../discv5"}

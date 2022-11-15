@@ -23,6 +23,7 @@
 
 use std::collections::btree_map::{BTreeMap, Entry};
 use std::time::Instant;
+use discv5::enr::k256::pkcs8::der::Encode;
 
 use discv5::kbucket::{Distance, Key};
 

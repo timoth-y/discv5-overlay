@@ -43,10 +43,9 @@ impl StateEvents {
                     error!(
                         error = %error,
                         request.discv5.id = %talk_request_id,
-                        "Error processing portal state request, responding with empty TALKRESP."
+                        "Error processing portal state request"
                     );
-                    // Return an empty TALKRESP if there was an error executing the request
-                    "".into()
+                    error.to_string().into_bytes()
                 }
             };
             if let Err(error) = talk_request.respond(reply) {

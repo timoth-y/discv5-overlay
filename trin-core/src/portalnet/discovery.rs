@@ -2,8 +2,9 @@ use super::{
     types::messages::{HexData, PortalnetConfig, ProtocolId},
     Enr,
 };
+use crate::socket;
 use crate::utils::bytes::hex_encode;
-use crate::{socket, TRIN_VERSION};
+
 use discv5::{
     enr::{CombinedKey, EnrBuilder, NodeId},
     Discv5, Discv5Config, Discv5ConfigBuilder, Discv5Event, RequestError, TalkRequest,
@@ -59,7 +60,7 @@ pub struct NodeAddress {
 /// Base Node Discovery Protocol v5 layer
 pub struct Discovery {
     /// The inner Discv5 service.
-    discv5: Discv5,
+    pub discv5: Discv5,
     /// A cache of the latest observed `NodeAddress` for a node ID.
     node_addr_cache: Arc<RwLock<LruCache<NodeId, NodeAddress>>>,
     /// Indicates if the Discv5 service has been started.
@@ -118,11 +119,6 @@ impl Discovery {
                 builder.ip(ip_address);
             }
             builder.udp4(config.listen_port);
-
-            // Use "t" as short-hand for "Trin" to save bytes in ENR.
-            let client_info = format!("t {}", TRIN_VERSION);
-            // Use "c" as short-hand for "client".
-            builder.add_value("c", client_info.as_bytes());
             builder.build(&enr_key).unwrap()
         };
 
@@ -146,6 +142,19 @@ impl Discovery {
         })
     }
 
+    pub fn new_raw(discv5: Discv5, portal_config: PortalnetConfig) -> Self {
+        let listen_all_ips = SocketAddr::new("0.0.0.0".parse().unwrap(), portal_config.listen_port);
+        let node_addr_cache = LruCache::new(portal_config.node_addr_cache_capacity);
+        let node_addr_cache = Arc::new(RwLock::new(node_addr_cache));
+
+        Self {
+            discv5,
+            node_addr_cache,
+            started: true,
+            listen_socket: listen_all_ips,
+        }
+    }
+
     pub async fn start(&mut self) -> Result<mpsc::Receiver<TalkRequest>, String> {
         info!(
             enr.encoded = ?self.local_enr(),
@@ -153,12 +162,15 @@ impl Discovery {
             "Starting discv5",
         );
 
-        let _ = self
-            .discv5
-            .start(self.listen_socket)
-            .await
-            .map_err(|e| format!("Failed to start discv5 server: {:?}", e))?;
-        self.started = true;
+        if !self.started {
+            let _ = self
+                .discv5
+                .start(self.listen_socket)
+                .await
+                .map_err(|e| format!("Failed to start discv5 server: {:?}", e))?;
+
+            self.started = true;
+        }
 
         let mut event_rx = self.discv5.event_stream().await.unwrap();
 

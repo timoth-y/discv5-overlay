@@ -5,8 +5,10 @@ use std::{
     ops::{Deref, DerefMut},
     str::FromStr,
 };
+use std::borrow::Cow;
 
 use base64;
+// use enr::k256::pkcs8::der::Encodable;
 use ethereum_types::U256;
 use hex::FromHexError;
 use rlp::Encodable;
@@ -164,6 +166,7 @@ pub enum ProtocolId {
     HeaderGossip,
     CanonicalIndices,
     Utp,
+    Custom(String)
 }
 
 /// Encode hex string to protocol id
@@ -178,7 +181,7 @@ impl FromStr for ProtocolId {
             "500D" => Ok(ProtocolId::HeaderGossip),
             "500E" => Ok(ProtocolId::CanonicalIndices),
             "757470" => Ok(ProtocolId::Utp),
-            _ => Err(ProtocolIdError::Invalid),
+            c => Ok(ProtocolId::Custom(std::str::from_utf8(&*hex::decode(c).unwrap()).unwrap().to_string())),
         }
     }
 }
@@ -192,6 +195,7 @@ impl fmt::Display for ProtocolId {
             ProtocolId::HeaderGossip => "Header Gossip",
             ProtocolId::CanonicalIndices => "Canonical Indices",
             ProtocolId::Utp => "uTP",
+            ProtocolId::Custom(c) => c
         };
         write!(f, "{}", protocol)
     }
@@ -209,6 +213,7 @@ impl TryFrom<ProtocolId> for Vec<u8> {
             ProtocolId::HeaderGossip => hex::decode("500D"),
             ProtocolId::CanonicalIndices => hex::decode("500E"),
             ProtocolId::Utp => hex::decode("757470"),
+            ProtocolId::Custom(c) => Ok(c.as_bytes().to_vec())
         };
 
         match bytes {

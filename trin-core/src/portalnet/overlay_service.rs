@@ -170,7 +170,7 @@ pub enum RequestDirection {
 /// An identifier for an overlay network request. The ID is used to track active outgoing requests.
 // We only have visibility on the request IDs for incoming Discovery v5 talk requests. Here we use
 // a separate identifier to track outgoing talk requests.
-type OverlayRequestId = u128;
+pub type OverlayRequestId = u128;
 
 /// An overlay request response channel.
 type OverlayResponder = oneshot::Sender<Result<Response, OverlayRequestError>>;
@@ -211,7 +211,7 @@ impl OverlayRequest {
 }
 
 /// An active outgoing overlay request.
-struct ActiveOutgoingRequest {
+pub struct ActiveOutgoingRequest {
     /// The ENR of the destination (target) node.
     pub destination: Enr,
     /// An optional responder to send the result of the associated request.
@@ -222,7 +222,7 @@ struct ActiveOutgoingRequest {
 }
 
 /// A response for a particular overlay request.
-struct OverlayResponse {
+pub struct OverlayResponse {
     /// The identifier of the associated request.
     pub request_id: OverlayRequestId,
     /// The result of the associated request.
@@ -236,11 +236,11 @@ pub struct OverlayService<TContentKey, TMetric, TValidator, TStore> {
     /// The content database of the local node.
     store: Arc<RwLock<TStore>>,
     /// The routing table of the local node.
-    kbuckets: Arc<RwLock<KBucketsTable<NodeId, Node>>>,
+    pub kbuckets: Arc<RwLock<KBucketsTable<NodeId, Node>>>,
     /// The data radius of the local node.
     data_radius: Arc<Distance>,
     /// The protocol identifier.
-    protocol: ProtocolId,
+    pub protocol: ProtocolId,
     /// A queue of peers that require regular ping to check connectivity.
     /// Inserted entries expire after a fixed time. Nodes to be pinged are inserted with a timeout
     /// duration equal to some ping interval, and we continuously poll the queue to check for
@@ -248,16 +248,16 @@ pub struct OverlayService<TContentKey, TMetric, TValidator, TStore> {
     peers_to_ping: HashSetDelay<NodeId>,
     // TODO: This should probably be a bounded channel.
     /// The receiver half of the service command channel.
-    command_rx: UnboundedReceiver<OverlayCommand<TContentKey>>,
+    pub command_rx: UnboundedReceiver<OverlayCommand<TContentKey>>,
     /// The sender half of the service command channel.
     /// This is used internally to submit requests (e.g. maintenance ping requests).
     command_tx: UnboundedSender<OverlayCommand<TContentKey>>,
     /// A map of active outgoing requests.
-    active_outgoing_requests: Arc<RwLock<HashMap<OverlayRequestId, ActiveOutgoingRequest>>>,
+    pub active_outgoing_requests: Arc<RwLock<HashMap<OverlayRequestId, ActiveOutgoingRequest>>>,
     /// A query pool that manages find node queries.
-    find_node_query_pool: QueryPool<NodeId, FindNodeQuery<NodeId>, TContentKey>,
+    pub find_node_query_pool: QueryPool<NodeId, FindNodeQuery<NodeId>, TContentKey>,
     /// A query pool that manages find content queries.
-    find_content_query_pool: QueryPool<NodeId, FindContentQuery<NodeId>, TContentKey>,
+    pub find_content_query_pool: QueryPool<NodeId, FindContentQuery<NodeId>, TContentKey>,
     /// Timeout after which a peer in an ongoing query is marked unresponsive.
     query_peer_timeout: Duration,
     /// Number of peers to request data from in parallel for a single query.
@@ -267,7 +267,7 @@ pub struct OverlayService<TContentKey, TMetric, TValidator, TStore> {
     /// The number of buckets we simultaneously request from each peer in a FINDNODES query.
     findnodes_query_distances_per_peer: usize,
     /// The receiver half of a channel for responses to outgoing requests.
-    response_rx: UnboundedReceiver<OverlayResponse>,
+    pub response_rx: UnboundedReceiver<OverlayResponse>,
     /// The sender half of a channel for responses to outgoing requests.
     response_tx: UnboundedSender<OverlayResponse>,
     /// The sender half of a channel to send requests to uTP listener
@@ -284,7 +284,7 @@ pub struct OverlayService<TContentKey, TMetric, TValidator, TStore> {
 
 impl<
         TContentKey: 'static + OverlayContentKey + Send + Sync,
-        TMetric: Metric + Send + Sync,
+        TMetric: 'static + Metric + Send + Sync,
         TValidator: 'static + Validator<TContentKey> + Send + Sync,
         TStore: 'static + ContentStore + Send + Sync,
     > OverlayService<TContentKey, TMetric, TValidator, TStore>
@@ -296,7 +296,79 @@ where
     /// The state of the overlay network largely consists of its routing table. The routing table
     /// is updated according to incoming requests and responses as well as autonomous maintenance
     /// processes.
-    pub async fn spawn(
+    pub fn new(
+        discovery: Arc<Discovery>,
+        store: Arc<RwLock<TStore>>,
+        kbuckets: Arc<RwLock<KBucketsTable<NodeId, Node>>>,
+        bootnode_enrs: Vec<Enr>,
+        ping_queue_interval: Option<Duration>,
+        data_radius: Arc<Distance>,
+        protocol: ProtocolId,
+        utp_listener_sender: UnboundedSender<UtpListenerRequest>,
+        enable_metrics: bool,
+        validator: Arc<TValidator>,
+        query_timeout: Duration,
+        query_peer_timeout: Duration,
+        query_parallelism: usize,
+        query_num_results: usize,
+        findnodes_query_distances_per_peer: usize,
+    ) -> (Self, UnboundedSender<OverlayCommand<TContentKey>>)
+        where
+            <TContentKey as TryFrom<Vec<u8>>>::Error: Send,
+    {
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+        let internal_command_tx = command_tx.clone();
+
+        let overlay_protocol = protocol.clone();
+
+        let peers_to_ping = if let Some(interval) = ping_queue_interval {
+            HashSetDelay::new(interval)
+        } else {
+            HashSetDelay::default()
+        };
+
+        let (response_tx, response_rx) = mpsc::unbounded_channel();
+
+        let metrics: Option<OverlayMetrics> =
+            enable_metrics.then(|| OverlayMetrics::new(&protocol));
+
+        let mut service = Self {
+            discovery,
+            store,
+            kbuckets,
+            data_radius,
+            protocol,
+            peers_to_ping,
+            command_rx,
+            command_tx: internal_command_tx,
+            active_outgoing_requests: Arc::new(RwLock::new(HashMap::new())),
+            find_node_query_pool: QueryPool::new(query_timeout),
+            find_content_query_pool: QueryPool::new(query_timeout),
+            query_peer_timeout,
+            query_parallelism,
+            query_num_results,
+            findnodes_query_distances_per_peer,
+            response_rx,
+            response_tx,
+            utp_listener_tx: utp_listener_sender,
+            phantom_content_key: PhantomData,
+            phantom_metric: PhantomData,
+            metrics,
+            validator,
+        };
+
+        info!(protocol = %overlay_protocol, "Starting overlay service");
+        service.initialize_routing_table(bootnode_enrs);
+
+        (service, command_tx)
+    }
+
+    /// Spawns the overlay network service.
+    ///
+    /// The state of the overlay network largely consists of its routing table. The routing table
+    /// is updated according to incoming requests and responses as well as autonomous maintenance
+    /// processes.
+    pub fn spawn(
         discovery: Arc<Discovery>,
         store: Arc<RwLock<TStore>>,
         kbuckets: Arc<RwLock<KBucketsTable<NodeId, Node>>>,
@@ -316,48 +388,27 @@ where
     where
         <TContentKey as TryFrom<Vec<u8>>>::Error: Send,
     {
-        let (command_tx, command_rx) = mpsc::unbounded_channel();
-        let internal_command_tx = command_tx.clone();
-
         let overlay_protocol = protocol.clone();
 
-        let peers_to_ping = if let Some(interval) = ping_queue_interval {
-            HashSetDelay::new(interval)
-        } else {
-            HashSetDelay::default()
-        };
-
-        let (response_tx, response_rx) = mpsc::unbounded_channel();
-
-        let metrics: Option<OverlayMetrics> =
-            enable_metrics.then(|| OverlayMetrics::new(&protocol));
+        let (mut service, command_tx) = Self::new(
+            discovery,
+            store,
+            kbuckets,
+            bootnode_enrs.clone(),
+            ping_queue_interval,
+            data_radius,
+            protocol,
+            utp_listener_sender,
+            enable_metrics,
+            validator,
+            query_timeout,
+            query_peer_timeout,
+            query_parallelism,
+            query_num_results,
+            findnodes_query_distances_per_peer,
+        );
 
         tokio::spawn(async move {
-            let mut service = Self {
-                discovery,
-                store,
-                kbuckets,
-                data_radius,
-                protocol,
-                peers_to_ping,
-                command_rx,
-                command_tx: internal_command_tx,
-                active_outgoing_requests: Arc::new(RwLock::new(HashMap::new())),
-                find_node_query_pool: QueryPool::new(query_timeout),
-                find_content_query_pool: QueryPool::new(query_timeout),
-                query_peer_timeout,
-                query_parallelism,
-                query_num_results,
-                findnodes_query_distances_per_peer,
-                response_rx,
-                response_tx,
-                utp_listener_tx: utp_listener_sender,
-                phantom_content_key: PhantomData,
-                phantom_metric: PhantomData,
-                metrics,
-                validator,
-            };
-
             info!(protocol = %overlay_protocol, "Starting overlay service");
             service.initialize_routing_table(bootnode_enrs);
             service.start().await;
@@ -479,14 +530,14 @@ where
                         warn!(request.id = %hex_encode_compact(response.request_id.to_be_bytes()), "No request found for response");
                     }
                 }
-                Some(Ok(node_id)) = self.peers_to_ping.next() => {
-                    // If the node is in the routing table, then ping and re-queue the node.
-                    let key = kbucket::Key::from(node_id);
-                    if let kbucket::Entry::Present(ref mut entry, _) = self.kbuckets.write().entry(&key) {
-                        self.ping_node(&entry.value().enr());
-                        self.peers_to_ping.insert(node_id);
-                    }
-                }
+                // Some(Ok(node_id)) = self.peers_to_ping.next() => {
+                //     // If the node is in the routing table, then ping and re-queue the node.
+                //     let key = kbucket::Key::from(node_id);
+                //     if let kbucket::Entry::Present(ref mut entry, _) = self.kbuckets.write().entry(&key) {
+                //         self.ping_node(&entry.value().enr());
+                //         self.peers_to_ping.insert(node_id);
+                //     }
+                // }
                 query_event = OverlayService::<TContentKey, TMetric, TValidator, TStore>::query_event_poll(&mut self.find_node_query_pool) => {
                     self.handle_find_nodes_query_event(query_event);
                 }
@@ -580,7 +631,7 @@ where
     /// Consumes previously applied pending entries from the `KBucketsTable`. An `AppliedPending`
     /// result is recorded when a pending bucket entry replaces a disconnected entry in the
     /// respective bucket.
-    async fn bucket_maintenance_poll(
+    pub async fn bucket_maintenance_poll(
         protocol: ProtocolId,
         kbuckets: &Arc<RwLock<KBucketsTable<NodeId, Node>>>,
     ) {
@@ -605,7 +656,7 @@ where
     /// Returns a `QueryEvent` when the `QueryPoolState` updates.
     /// This happens when a query needs to send a request to a node, when a query has completed,
     // or when a query has timed out.
-    async fn query_event_poll<TQuery: Query<NodeId>>(
+    pub async fn query_event_poll<TQuery: Query<NodeId>>(
         queries: &mut QueryPool<NodeId, TQuery, TContentKey>,
     ) -> QueryEvent<TQuery, TContentKey> {
         future::poll_fn(move |_cx| match queries.poll() {
@@ -636,7 +687,7 @@ where
     }
 
     /// Handles a `QueryEvent` from a poll on the find nodes query pool.
-    fn handle_find_nodes_query_event(
+    pub fn handle_find_nodes_query_event(
         &mut self,
         query_event: QueryEvent<FindNodeQuery<NodeId>, TContentKey>,
     ) {
@@ -712,7 +763,7 @@ where
     }
 
     /// Handles a `QueryEvent` from a poll on the find content query pool.
-    fn handle_find_content_query_event(
+    pub fn handle_find_content_query_event(
         &mut self,
         query_event: QueryEvent<FindContentQuery<NodeId>, TContentKey>,
     ) {
@@ -824,7 +875,7 @@ where
     }
 
     /// Processes an overlay request.
-    fn process_request(&mut self, request: OverlayRequest) {
+    pub fn process_request(&mut self, request: OverlayRequest) {
         // For incoming requests, handle the request, possibly send the response over the channel,
         // and then process the request.
         //
@@ -1163,7 +1214,7 @@ where
     }
 
     /// Processes a failed request intended for some destination node.
-    fn process_request_failure(
+    pub fn process_request_failure(
         &mut self,
         request_id: OverlayRequestId,
         destination: Enr,
@@ -1185,7 +1236,7 @@ where
     }
 
     /// Processes a response to an outgoing request from some source node.
-    fn process_response(
+    pub fn process_response(
         &mut self,
         response: Response,
         source: Enr,
@@ -1948,7 +1999,7 @@ where
     }
 
     /// Starts a `FindContentQuery` for a target content key.
-    fn init_find_content_query(
+    pub fn init_find_content_query(
         &mut self,
         target: TContentKey,
         callback: Option<oneshot::Sender<Option<Vec<u8>>>>,
@@ -2117,7 +2168,7 @@ mod tests {
         };
         let discovery = Arc::new(Discovery::new(portal_config).unwrap());
 
-        let (utp_listener_tx, _) = unbounded_channel::<UtpListenerRequest>();
+        let (x, _) = unbounded_channel::<UtpListenerRequest>();
 
         let node_id = discovery.local_enr().node_id();
         let store = MemoryContentStore::new(node_id, DistanceFunction::Xor);
