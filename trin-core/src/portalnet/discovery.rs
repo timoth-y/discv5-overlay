@@ -62,7 +62,7 @@ pub struct Discovery {
     /// The inner Discv5 service.
     pub discv5: Discv5,
     /// A cache of the latest observed `NodeAddress` for a node ID.
-    node_addr_cache: Arc<RwLock<LruCache<NodeId, NodeAddress>>>,
+    pub node_addr_cache: Arc<RwLock<LruCache<NodeId, NodeAddress>>>,
     /// Indicates if the Discv5 service has been started.
     pub started: bool,
     /// The socket address that the Discv5 service listens on.

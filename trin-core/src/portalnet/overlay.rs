@@ -96,7 +96,7 @@ pub struct OverlayProtocol<TContentKey, TMetric, TValidator, TStore> {
     /// The data radius of the local node.
     pub data_radius: Arc<Distance>,
     /// The overlay routing table of the local node.
-    kbuckets: Arc<RwLock<KBucketsTable<NodeId, Node>>>,
+    pub kbuckets: Arc<RwLock<KBucketsTable<NodeId, Node>>>,
     /// The subnetwork protocol of the overlay.
     protocol: ProtocolId,
     /// A sender to send commands to the OverlayService.
@@ -651,7 +651,6 @@ where
         };
 
         // Send the request and wait on the response.
-        println!("sening offer");
         match self
             .send_overlay_request(Request::Offer(request), direction)
             .await
@@ -663,7 +662,7 @@ where
     }
 
     /// Performs a content lookup for `target`.
-    pub async fn lookup_content(&self, target: TContentKey) -> Option<Vec<u8>> {
+    pub async fn lookup_content(&self, target: TContentKey) -> Result<Vec<u8>, Vec<NodeId>> {
         let (tx, rx) = oneshot::channel();
         let content_id = target.content_id();
 
@@ -677,11 +676,11 @@ where
                 content.id = %hex_encode(content_id),
                 "Error submitting FindContent query to service"
             );
-            return None;
+            return Err(vec![]);
         }
 
         match rx.await {
-            Ok(result) => result,
+            Ok((result, closest_nodes)) => if result.is_some() { Ok(result.unwrap()) } else {Err(closest_nodes) },
             Err(err) => {
                 warn!(
                     protocol = %self.protocol,
@@ -689,7 +688,7 @@ where
                     content.id = %hex_encode(content_id),
                     "Error receiving content from service",
                 );
-                None
+                Err(vec![])
             }
         }
     }

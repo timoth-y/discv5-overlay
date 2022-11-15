@@ -1,3 +1,5 @@
+#![feature(map_first_last)]
+
 pub mod cli;
 pub mod jsonrpc;
 pub mod locks;

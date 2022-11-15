@@ -90,7 +90,7 @@ pub enum OverlayCommand<TContentKey> {
         /// The query target.
         target: TContentKey,
         /// A callback channel to transmit the result of the query.
-        callback: oneshot::Sender<Option<Vec<u8>>>,
+        callback: oneshot::Sender<(Option<Vec<u8>>, Vec<NodeId>)>,
     },
 }
 
@@ -245,7 +245,7 @@ pub struct OverlayService<TContentKey, TMetric, TValidator, TStore> {
     /// Inserted entries expire after a fixed time. Nodes to be pinged are inserted with a timeout
     /// duration equal to some ping interval, and we continuously poll the queue to check for
     /// expired entries.
-    peers_to_ping: HashSetDelay<NodeId>,
+    pub peers_to_ping: HashSetDelay<NodeId>,
     // TODO: This should probably be a bounded channel.
     /// The receiver half of the service command channel.
     pub command_rx: UnboundedReceiver<OverlayCommand<TContentKey>>,
@@ -530,14 +530,14 @@ where
                         warn!(request.id = %hex_encode_compact(response.request_id.to_be_bytes()), "No request found for response");
                     }
                 }
-                // Some(Ok(node_id)) = self.peers_to_ping.next() => {
-                //     // If the node is in the routing table, then ping and re-queue the node.
-                //     let key = kbucket::Key::from(node_id);
-                //     if let kbucket::Entry::Present(ref mut entry, _) = self.kbuckets.write().entry(&key) {
-                //         self.ping_node(&entry.value().enr());
-                //         self.peers_to_ping.insert(node_id);
-                //     }
-                // }
+                Some(Ok(node_id)) = self.peers_to_ping.next() => {
+                    // If the node is in the routing table, then ping and re-queue the node.
+                    let key = kbucket::Key::from(node_id);
+                    if let kbucket::Entry::Present(ref mut entry, _) = self.kbuckets.write().entry(&key) {
+                        self.ping_node(&entry.value().enr());
+                        self.peers_to_ping.insert(node_id);
+                    }
+                }
                 query_event = OverlayService::<TContentKey, TMetric, TValidator, TStore>::query_event_poll(&mut self.find_node_query_pool) => {
                     self.handle_find_nodes_query_event(query_event);
                 }
@@ -583,7 +583,7 @@ where
     }
 
     /// Main bucket refresh lookup logic
-    fn bucket_refresh_lookup(&mut self) {
+    pub fn bucket_refresh_lookup(&mut self) {
         // Look at local routing table and select the largest 17 buckets.
         // We only need the 17 bits furthest from our own node ID, because the closest 239 bits of
         // buckets are going to be empty-ish.
@@ -681,7 +681,9 @@ where
                 Poll::Ready(QueryEvent::Waiting(query_id, node_id, request_body))
             }
 
-            QueryPoolState::Waiting(None) | QueryPoolState::Idle => Poll::Pending,
+            QueryPoolState::Waiting(None) | QueryPoolState::Idle => {
+                Poll::Pending
+            },
         })
         .await
     }
@@ -767,6 +769,8 @@ where
         &mut self,
         query_event: QueryEvent<FindContentQuery<NodeId>, TContentKey>,
     ) {
+        let is_timeout = matches!(query_event, QueryEvent::TimedOut(..));
+
         match query_event {
             QueryEvent::Waiting(query_id, node_id, request) => {
                 if let Some(enr) = self.find_enr(&node_id) {
@@ -797,6 +801,12 @@ where
             QueryEvent::Finished(query_id, query_info, query)
             | QueryEvent::TimedOut(query_id, query_info, query) => {
                 let result = query.into_result();
+
+                // println!("query {query_id} finished (is_timeout={is_timeout}) with result {}", match result {
+                //     FindContentQueryResult::ClosestNodes(_) => "ClosestNodes",
+                //     FindContentQueryResult::Content { .. } => "Content"
+                // });
+
                 let (content, closest_nodes) = match result {
                     FindContentQueryResult::ClosestNodes(closest_nodes) => (None, closest_nodes),
                     FindContentQueryResult::Content {
@@ -811,7 +821,7 @@ where
                 } = query_info.query_type
                 {
                     // Send (possibly `None`) content on callback channel.
-                    if let Err(err) = callback.send(content.clone()) {
+                    if let Err(err) = callback.send((content.clone(), closest_nodes.clone())) {
                         error!(
                             query.id = %query_id,
                             error = ?err,
@@ -1162,6 +1172,7 @@ where
             kbucket::Entry::Pending(_, _) => true,
             _ => false,
         };
+
 
         // If the node is in the routing table, then call update on the routing table in order to
         // update the node's position in the kbucket. If the node is not in the routing table, then
@@ -1751,7 +1762,7 @@ where
     }
 
     /// Submits a request to ping a destination (target) node.
-    fn ping_node(&self, destination: &Enr) {
+    pub fn ping_node(&self, destination: &Enr) {
         trace!(
             protocol = %self.protocol,
             request.dest = %destination.node_id(),
@@ -1830,6 +1841,7 @@ where
                         promoted = %node_id,
                         "Node promoted to connected",
                     );
+
                     self.peers_to_ping.insert(node_id);
                 }
             }
@@ -1842,6 +1854,7 @@ where
                     error = ?reason,
                     "Error inserting/updating node into routing table",
                 );
+
             }
         }
 
@@ -1875,7 +1888,7 @@ where
                     Err(other)
                 }
             },
-            _ => {
+            e => {
                 trace!(
                     protocol = %self.protocol,
                     updated = %node_id,
@@ -1938,6 +1951,7 @@ where
             .collect();
 
         nodes_with_distance.sort_by(|a, b| a.0.cmp(&b.0));
+        // println!("found nodes_close_to_content({}): {:?}", NodeId::new(&content_id).to_string(), nodes_with_distance.iter().map(|(x, y)| (y.node_id().to_string(), x.log2().unwrap())).collect::<Vec<_>>());
 
         let closest_nodes = nodes_with_distance
             .into_iter()
@@ -2002,7 +2016,7 @@ where
     pub fn init_find_content_query(
         &mut self,
         target: TContentKey,
-        callback: Option<oneshot::Sender<Option<Vec<u8>>>>,
+        callback: Option<oneshot::Sender<(Option<Vec<u8>>, Vec<NodeId>)>>,
     ) -> Option<QueryId> {
         // Represent the target content ID with a node ID.
         let target_node_id = NodeId::new(&target.content_id());
