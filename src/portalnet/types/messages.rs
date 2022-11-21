@@ -25,7 +25,7 @@ use crate::portalnet::{
 };
 use crate::utils::bytes::hex_encode;
 
-pub type ByteList = VariableList<u8, typenum::U2048>;
+pub type ByteList = VariableList<u8, typenum::U10000>;
 
 /// Custom payload element of Ping and Pong overlay messages
 #[derive(Debug, PartialEq, Clone)]
@@ -525,6 +525,21 @@ impl TryInto<Value> for Content {
             Err(MessageDecodeError::Type)
         }
     }
+}
+
+#[derive(Debug, PartialEq, Clone, Encode, Decode)]
+#[ssz(enum_behaviour = "union")]
+pub enum ElasticPacket {
+    ConnectionId(u16),
+    Data(ByteList),
+    Result((u16, Vec<u8>)),
+    Promise(u16)
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum ElasticResponse {
+    Data(Vec<u8>),
+    Promise(u16)
 }
 
 #[derive(Debug, PartialEq, Clone, Encode, Decode)]

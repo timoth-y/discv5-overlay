@@ -80,5 +80,5 @@ tokio-test = "0.4.2"
 tracing-subscriber = "0.3.15"
 
 [patch.crates-io]
-discv5 = {git = "https://github.com/timoth-y/discv5"}
-# discv5 = {path = "../../discv5"}
+# discv5 = {git = "https://github.com/timoth-y/discv5"}
+discv5 = {path = "../discv5"}

@@ -22,7 +22,7 @@ use futures::{channel::oneshot, prelude::*};
 use parking_lot::RwLock;
 use rand::seq::SliceRandom;
 use smallvec::SmallVec;
-use ssz::Encode;
+use ssz::{Encode};
 use ssz_types::{BitList, VariableList};
 use thiserror::Error;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -92,6 +92,12 @@ pub enum OverlayCommand<TContentKey> {
         /// A callback channel to transmit the result of the query.
         callback: oneshot::Sender<(Option<Vec<u8>>, Vec<NodeId>)>,
     },
+    // StreamUtpPacket {
+    //     protocol_id: Vec<u8>,
+    //     payload: Vec<u8>,
+    //     callback: oneshot::Sender<>,
+    //     direction: Enr,
+    // }
 }
 
 /// An overlay request error.

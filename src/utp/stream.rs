@@ -10,6 +10,7 @@ use std::{
     convert::TryFrom,
     sync::Arc,
 };
+use std::backtrace::Backtrace;
 use tokio::{
     sync::{
         mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
@@ -216,6 +217,7 @@ impl UtpListener {
     async fn process_utp_request(&mut self, request: TalkRequest) {
         let payload = request.body();
         let node_id = request.node_id();
+        let request_id = request.id().clone();
 
         match Packet::try_from(payload) {
             Ok(packet) => {
@@ -223,6 +225,8 @@ impl UtpListener {
 
                 match packet.get_type() {
                     PacketType::Reset => {
+                        debug!("node {} incoming RESET packet from {} with connection_id={connection_id}", self.discovery.local_enr().node_id(), node_id);
+
                         if let Some(conn) = self
                             .utp_connections
                             .get_mut(&ConnectionKey::new(*node_id, connection_id))
@@ -239,6 +243,7 @@ impl UtpListener {
                     }
                     PacketType::Syn => {
                         let conn_key = ConnectionKey::new(*node_id, connection_id);
+                        debug!("node {} incoming SYN packet from {} with connection_id={connection_id}", self.discovery.local_enr().node_id(), node_id);
                         if let Some(conn) = self.utp_connections.get_mut(&conn_key) {
                             if conn.discv5_tx.send(packet).is_err() {
                                 error!("Unable to send SYN packet to uTP stream handler");
@@ -252,32 +257,34 @@ impl UtpListener {
                                 return;
                             }
 
+
                             // Send content data if the stream is listening for FindContent SYN packet
                             if let UtpStreamId::ContentStream(content_data) = conn.stream_id.clone()
                             // TODO: Change this `clone` to borrow after rust 1.62
                             {
                                 // We want to send uTP data only if the content is Content(ByteList)
                                 debug!(
-                                    "Sending content data via uTP with len: {}",
+                                    "Sending content data for connection {} via uTP with len: {}",
+                                    connection_id,
                                     content_data.len()
                                 );
-                                // send the content to the requester over a uTP stream
-                                let result = conn
-                                    .send_to(
-                                        &UtpMessage::new(content_data.as_ssz_bytes()).encode()[..],
-                                    )
-                                    .await;
-
-                                if let Err(err) = result {
-                                    error!("Error sending content {err}");
-                                    return;
-                                }
-
-                                // Close uTP connection
                                 let mut conn_clone = conn.clone();
+                                let node_id = node_id.clone();
+
                                 tokio::spawn(async move {
+                                    // send the content to the requester over a uTP stream
+                                    let result = conn_clone
+                                        .send_to(&content_data.to_vec()[..])
+                                        .await;
+
+                                    if let Err(err) = result {
+                                        error!("Error sending content {err}");
+                                        return;
+                                    }
+
+                                    // Close uTP connection
                                     if let Err(msg) = conn_clone.close().await {
-                                        error!("Unable to close uTP connection!: {msg}")
+                                        error!("Unable to close uTP connection!: {msg} with {} for connection_id={connection_id}", node_id);
                                     }
                                 });
                             }
@@ -289,6 +296,8 @@ impl UtpListener {
                     }
                     // Receive DATA and FIN packets
                     PacketType::Data => {
+                        debug!("node {} incoming Data packet from {} with connection_id={connection_id} request_id={request_id}", self.discovery.local_enr().node_id(), node_id);
+
                         let conn_key = ConnectionKey::new(*node_id, connection_id);
                         let mut conn = self.utp_connections.get_mut(&conn_key);
 
@@ -305,17 +314,17 @@ impl UtpListener {
                                 return;
                             }
 
-                            let mut buf = [0; BUF_SIZE];
-                            match conn.recv_from(&mut buf).await {
-                                Ok((bytes_read, _)) => {
-                                    if bytes_read > 0 {
-                                        conn.recv_data_stream.extend_from_slice(&buf[..bytes_read]);
-                                    }
-                                }
-                                Err(err) => {
-                                    error!("Unable to receive uTP packet {packet:?}: {err}")
-                                }
-                            }
+                            // let mut buf = [0; BUF_SIZE];
+                            // match conn.recv_from(&mut buf).await {
+                            //     Ok((bytes_read, _)) => {
+                            //         if bytes_read > 0 {
+                            //             conn.recv_data_stream.extend_from_slice(&buf[..bytes_read]);
+                            //         }
+                            //     }
+                            //     Err(err) => {
+                            //         error!("Unable to receive uTP packet {packet:?}: {err}");
+                            //     }
+                            // }
                         } else {
                             warn!(
                                 "Received DATA packet for an unknown active uTP stream: {packet:?}, stream id: {}", connection_id
@@ -323,6 +332,8 @@ impl UtpListener {
                         }
                     }
                     PacketType::Fin => {
+                        debug!("node {} incoming Fin packet from {} with connection_id={connection_id}", self.discovery.local_enr().node_id(), node_id);
+
                         // As we can receive bidirectional FIN packets, we handle explicitly here
                         // only the packet received when we are receiver of the data.
                         // When we send the data and receive a FIN packet, those packet is handled
@@ -337,22 +348,22 @@ impl UtpListener {
                             }
 
                             // When FIN is received, loop and collect all remaining payload before closing the connection
-                            loop {
-                                let mut buf = [0; BUF_SIZE];
-
-                                match conn.recv_from(&mut buf).await {
-                                    Ok((bytes_read, _)) => {
-                                        if bytes_read > 0 {
-                                            conn.recv_data_stream
-                                                .extend_from_slice(&buf[..bytes_read]);
-                                        } else {
-                                            conn.emit_close_event();
-                                            break;
-                                        }
-                                    }
-                                    Err(err) => error!("Unable to receive uTP FIN packet: {err}"),
-                                }
-                            }
+                            // loop {
+                            //     let mut buf = [0; BUF_SIZE];
+                            //
+                            //     match conn.recv_from(&mut buf).await {
+                            //         Ok((bytes_read, _)) => {
+                            //             if bytes_read > 0 {
+                            //                 conn.recv_data_stream
+                            //                     .extend_from_slice(&buf[..bytes_read]);
+                            //             } else {
+                            //                 conn.emit_close_event();
+                            //                 break;
+                            //             }
+                            //         }
+                            //         Err(err) => error!("Unable to receive uTP FIN packet: {err}"),
+                            //     }
+                            // }
                         } else if let Some(conn) = self
                             .utp_connections
                             .get_mut(&ConnectionKey::new(*node_id, connection_id))
@@ -363,14 +374,16 @@ impl UtpListener {
                                     error!("Unable to send FIN packet to uTP stream handler");
                                 }
 
-                                let mut buf = [0; BUF_SIZE];
-
-                                match conn.recv(&mut buf).await {
-                                    Ok(_) => {
-                                        conn.emit_close_event();
-                                    }
-                                    Err(err) => error!("Unable to receive uTP FIN packet: {err}"),
-                                }
+                                // tokio::spawn(async move {
+                                //     let mut buf = [0; BUF_SIZE];
+                                //
+                                //     match conn.recv(&mut buf).await {
+                                //         Ok(_) => {
+                                //             conn.emit_close_event();
+                                //         }
+                                //         Err(err) => error!("Unable to receive uTP FIN packet: {err}"),
+                                //     }
+                                // });
                             }
                         } else {
                             warn!(
@@ -379,6 +392,8 @@ impl UtpListener {
                         }
                     }
                     PacketType::State => {
+                        debug!("node {} incoming State packet from {} with connection_id={connection_id}", self.discovery.local_enr().node_id(), node_id);
+
                         let conn_key = ConnectionKey::new(*node_id, connection_id);
                         let mut conn = self.utp_connections.get_mut(&conn_key);
 
@@ -404,6 +419,8 @@ impl UtpListener {
                 error!("Failed to decode packet: {err}");
             }
         }
+
+        request.respond(vec![]);
     }
 
     /// Process overlay uTP requests
@@ -700,6 +717,7 @@ impl UtpStream {
     async fn send_packets_in_queue(&mut self) {
         while let Some(mut packet) = self.unsent_queue.pop_front() {
             self.send_packet(&mut packet).await;
+            debug!("node {} sends to {} => {:?} connection_id={}", self.socket.local_enr().node_id(), self.connected_to.node_id(), packet, self.sender_connection_id);
             self.cur_window += packet.len() as u32;
             self.send_window.push(packet);
         }
@@ -930,20 +948,20 @@ impl UtpStream {
                 packet.set_seq_nr(1);
 
                 // Send SYN
-                debug!("resending SYN: {:?}", packet);
-                let _ = self
-                    .socket
-                    .send_talk_req(
-                        self.connected_to.clone(),
-                        ProtocolId::Utp,
-                        Vec::from(packet.as_ref()),
-                    )
-                    .await;
-
-                // When resending SYN packet, we want to make sure that we increase the socket seq_nr
-                if self.seq_nr == 1 {
-                    self.seq_nr = self.seq_nr.wrapping_add(1)
-                }
+                // println!("conn {} resending SYN: {:?}", self.receiver_connection_id, packet);
+                // let _ = self
+                //     .socket
+                //     .send_talk_req(
+                //         self.connected_to.clone(),
+                //         ProtocolId::Utp,
+                //         Vec::from(packet.as_ref()),
+                //     )
+                //     .await;
+                //
+                // // When resending SYN packet, we want to make sure that we increase the socket seq_nr
+                // if self.seq_nr == 1 {
+                //     self.seq_nr = self.seq_nr.wrapping_add(1)
+                // }
             } else if self.state != StreamState::Uninitialized {
                 // The socket is waiting for incoming packets but the remote peer is silent:
                 // send a fast resend request.
@@ -963,7 +981,7 @@ impl UtpStream {
                     Vec::from(packet.as_ref()),
                 )
                 .await;
-            debug!("resent {:?}", packet);
+            debug!("conn {} resent {:?}", self.receiver_connection_id, packet);
         }
 
         Ok(())
@@ -1460,14 +1478,15 @@ impl UtpStream {
             }
         }
 
-        debug!("received {:?}", packet);
-
         // Insert data packet into the incoming buffer if it isn't a duplicate of a previously
         // discarded packet
         if packet.get_type() == PacketType::Data
-            && packet.seq_nr().wrapping_sub(self.last_dropped) > 0
         {
-            self.insert_into_buffer(packet.clone());
+            if packet.seq_nr().saturating_sub(self.last_dropped) > 0 {
+                self.insert_into_buffer(packet.clone());
+            } else {
+                return Ok(Some(0))
+            }
         }
 
         // Process packet, including sending a reply if necessary
@@ -1485,7 +1504,7 @@ impl UtpStream {
                 )
                 .await
             {
-                let msg = format!("reply packet error {packet:?}: {msg}");
+                let msg = format!("conn {} reply packet error {packet:?}: {msg}", self.receiver_connection_id);
                 warn!("{msg}");
                 return Err(anyhow!(msg));
             }

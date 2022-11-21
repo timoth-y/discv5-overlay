@@ -255,6 +255,10 @@ impl Discovery {
         self.discv5.find_enr(node_id)
     }
 
+    pub fn find_enr_or_cache(&self, node_id: &NodeId) -> Option<Enr> {
+        self.discv5.find_enr(node_id).or_else(|| self.cached_node_addr(node_id).map(|na| na.enr))
+    }
+
     /// Returns the cached `NodeAddress` or `None` if not cached.
     pub fn cached_node_addr(&self, node_id: &NodeId) -> Option<NodeAddress> {
         match self.node_addr_cache.write().get(node_id) {

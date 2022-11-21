@@ -6,6 +6,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use std::thread::sleep;
 
 use anyhow::anyhow;
 use discv5::{
@@ -17,7 +18,7 @@ use discv5::{
 use futures::{channel::oneshot, future::join_all};
 use parking_lot::RwLock;
 use rand::seq::IteratorRandom;
-use ssz::Encode;
+use ssz::{Decode, DecodeError, Encode};
 use ssz_types::VariableList;
 use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle};
 use tracing::{debug, error, info, warn};
@@ -47,6 +48,7 @@ use crate::{
         trin_helpers::UtpStreamId,
     },
 };
+use crate::portalnet::types::messages::ElasticPacket;
 
 /// Configuration parameters for the overlay network.
 #[derive(Clone)]
@@ -112,6 +114,8 @@ pub struct OverlayProtocol<TContentKey, TMetric, TValidator, TStore> {
     /// Accepted content validator that makes requests to this/other overlay networks (or trusted
     /// http server)
     validator: Arc<TValidator>,
+
+    promises: Arc<RwLock<HashMap<u16, oneshot::Sender<Vec<u8>>>>>
 }
 
 impl<
@@ -170,6 +174,7 @@ where
             phantom_content_key: PhantomData,
             phantom_metric: PhantomData,
             validator,
+            promises: Arc::new(Default::default())
         }, service)
     }
 
@@ -580,8 +585,66 @@ where
         }
     }
 
+    pub async fn send_elastic_talk_req(
+        &self,
+        enr: Enr,
+        protocol_id: Vec<u8>,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, OverlayRequestError> {
+        let content = ByteList::from(VariableList::from(payload.clone()));
+
+        let request = if content.len() < 950 {
+            ElasticPacket::Data(content)
+        } else {
+            let conn_id: u16 = crate::utp::stream::rand();
+
+            // Listen for incoming uTP connection request on as part of uTP handshake and
+            // storing content data, so we can send it inside UtpListener right after we receive
+            // SYN packet from the requester
+            self.add_utp_connection(&enr.node_id(), conn_id, UtpStreamId::ContentStream(content))?;
+
+            ElasticPacket::ConnectionId(conn_id.to_be())
+        };
+        let resp = self.discovery.discv5.talk_req(enr.clone(), protocol_id, request.as_ssz_bytes())
+            .await
+            .map_err(|e| OverlayRequestError::Discv5Error(e))?;
+
+        let resp: ElasticPacket = ElasticPacket::from_ssz_bytes(&*resp).map_err(|e| OverlayRequestError::DecodeError)?;
+
+        match resp {
+            ElasticPacket::Data(bytes) => Ok(bytes.to_vec()),
+            ElasticPacket::ConnectionId(conn_id) => {
+                let conn_id = u16::from_be(conn_id);
+                let content = self.init_find_content_stream(enr, conn_id).await?;
+                Ok(content)
+            },
+            ElasticPacket::Promise(promise_id) => {
+                let (tx, rx) = oneshot::channel();
+                self.promises.write().insert(promise_id, tx);
+                rx.await.map_err(|_| OverlayRequestError::ChannelFailure("promise channel was canceled".to_string()))
+            }
+            _ => panic!("unsupported response")
+        }
+    }
+
+    pub fn handle_promise_result(
+        &self,
+        promise_id: u16,
+        res: Vec<u8>,
+    ) {
+        let mut promises = self.promises.write();
+        match promises.remove(&promise_id) {
+            Some(tx) => tx.send(res).unwrap(),
+            None => {
+                drop(promises);
+                sleep(Duration::from_millis(1));
+                self.handle_promise_result(promise_id, res);
+            }
+        }
+    }
+
     /// Initialize FIndContent uTP stream with remote node
-    async fn init_find_content_stream(
+    pub async fn init_find_content_stream(
         &self,
         enr: Enr,
         conn_id: u16,
@@ -690,6 +753,34 @@ where
                 );
                 Err(vec![])
             }
+        }
+    }
+
+    /// Send request to UtpListener to add a uTP stream to the active connections
+    fn add_utp_connection(
+        &self,
+        source: &NodeId,
+        conn_id_recv: u16,
+        stream_id: UtpStreamId,
+    ) -> Result<(), OverlayRequestError> {
+        if let Some(enr) = self.discovery.find_enr(source) {
+            // Initialize active uTP stream with requesting node
+            let utp_request = UtpListenerRequest::InitiateConnection(
+                enr,
+                self.protocol.clone(),
+                stream_id,
+                conn_id_recv,
+            );
+            if let Err(err) = self.utp_listener_tx.send(utp_request) {
+                return Err(OverlayRequestError::UtpError(format!(
+                    "Unable to send uTP AddActiveConnection request: {err}"
+                )));
+            }
+            Ok(())
+        } else {
+            Err(OverlayRequestError::UtpError(format!(
+                "Can't find ENR in overlay routing table matching remote NodeId: {source}"
+            )))
         }
     }
 
