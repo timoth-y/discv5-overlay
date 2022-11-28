@@ -54,7 +54,7 @@ pub struct NodeAddress {
     /// The node's ENR.
     pub enr: Enr,
     /// The node's observed socket address.
-    pub socket_addr: SocketAddr,
+    pub socket_addr: Option<SocketAddr>,
 }
 
 /// Base Node Discovery Protocol v5 layer
@@ -188,7 +188,7 @@ impl Discovery {
                     Discv5Event::SessionEstablished(enr, socket_addr) => {
                         node_addr_cache
                             .write()
-                            .put(enr.node_id(), NodeAddress { enr, socket_addr });
+                            .put(enr.node_id(), NodeAddress { enr, socket_addr: Some(socket_addr) });
                     }
                     _ => continue,
                 }

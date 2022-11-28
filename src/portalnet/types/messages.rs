@@ -532,8 +532,15 @@ impl TryInto<Value> for Content {
 pub enum ElasticPacket {
     ConnectionId(u16),
     Data(ByteList),
-    Result((u16, Vec<u8>)),
+    Result((u16, ElasticResult)),
     Promise(u16)
+}
+
+#[derive(Debug, PartialEq, Clone, Encode, Decode)]
+#[ssz(enum_behaviour = "union")]
+pub enum ElasticResult {
+    Data(Vec<u8>),
+    ConnectionId(u16),
 }
 
 #[derive(Debug, PartialEq, Clone)]

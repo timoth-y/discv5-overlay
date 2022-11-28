@@ -48,7 +48,7 @@ use crate::{
         trin_helpers::UtpStreamId,
     },
 };
-use crate::portalnet::types::messages::ElasticPacket;
+use crate::portalnet::types::messages::{ElasticPacket, ElasticResult};
 
 /// Configuration parameters for the overlay network.
 #[derive(Clone)]
@@ -598,6 +598,8 @@ where
         } else {
             let conn_id: u16 = crate::utp::stream::rand();
 
+            // println!("streaming into uTP (conn_id={conn_id}): {}", content.len());
+
             // Listen for incoming uTP connection request on as part of uTP handshake and
             // storing content data, so we can send it inside UtpListener right after we receive
             // SYN packet from the requester
@@ -625,6 +627,29 @@ where
             }
             _ => panic!("unsupported response")
         }
+    }
+
+    pub async fn send_result(
+        &self,
+        enr: Enr,
+        protocol_id: Vec<u8>,
+        promise_id: u16,
+        payload: Vec<u8>,
+    ) -> Result<(), OverlayRequestError> {
+        let request = ElasticPacket::Result((promise_id, if payload.len() < 900 {
+            ElasticResult::Data(payload)
+        } else {
+            let conn_id: u16 = crate::utp::stream::rand();
+
+            self.add_utp_connection(&enr.node_id(), conn_id, UtpStreamId::ContentStream(ByteList::from(VariableList::from(payload.clone()))))?;
+
+            ElasticResult::ConnectionId(conn_id.to_be())
+        }));
+
+        let _ = self.discovery.discv5.talk_req(enr.clone(), protocol_id, request.as_ssz_bytes())
+            .await
+            .map_err(|e| OverlayRequestError::Discv5Error(e))?;
+        Ok(())
     }
 
     pub fn handle_promise_result(
@@ -763,7 +788,7 @@ where
         conn_id_recv: u16,
         stream_id: UtpStreamId,
     ) -> Result<(), OverlayRequestError> {
-        if let Some(enr) = self.discovery.find_enr(source) {
+        if let Some(enr) = self.discovery.find_enr_or_cache(source) {
             // Initialize active uTP stream with requesting node
             let utp_request = UtpListenerRequest::InitiateConnection(
                 enr,
